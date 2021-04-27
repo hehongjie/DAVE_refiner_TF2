@@ -45,7 +45,7 @@ def DataGenerator(file_path, batch_size):
     mask_datagen = ImageDataGenerator(**aug_dict)
     image_generator = image_datagen.flow_from_directory(
         file_path,
-        classes=["image"],
+        classes=["images"],
         color_mode = "rgb",
         target_size = (512, 512),
         class_mode = None,
@@ -53,7 +53,7 @@ def DataGenerator(file_path, batch_size):
 
     mask_generator = mask_datagen.flow_from_directory(
         file_path,
-        classes=["label"],
+        classes=["labels"],
         color_mode = "grayscale",
         target_size = (512, 512),
         class_mode = None,
@@ -128,15 +128,15 @@ def soft_jaccard_loss(y_true, y_pred):
 
     return 1 - soft_jaccard_index(y_true, y_pred)
 def train_model(model,traindata_path,valdata_path):
-    trainset = DataGenerator(traindata_path, batch_size=5)
-    valset = DataGenerator(valdata_path, batch_size=5)
+    trainset = DataGenerator(traindata_path, batch_size=1)
+    valset = DataGenerator(valdata_path, batch_size=1)
     #with one TITAN GPU, one epoch will only spend 5 minutes.
     #if it runs on CPU, one epoch will spend more than 1 hour.
     log_dir = "./logs/fit/"+datetime.datetime.now().strftime('%Y%m%d-%H%M%S')
     tensorboard_callback = tf.keras.callbacks.TensorBoard(log_dir=log_dir,histogram_freq=1)
     model.compile(optimizer=Adam(lr = 1e-4), loss=soft_jaccard_loss, metrics=[jaccard_loss_b, keras.losses.binary_crossentropy, joint_loss, keras.losses.mean_squared_error, soft_jaccard_loss, jaccard_loss,'accuracy'])
 
-    model.fit(trainset,steps_per_epoch=500,epochs=100,validation_data=valset, validation_steps=10, validation_freq=1, callbacks=[tensorboard_callback])
+    model.fit(trainset,steps_per_epoch=500,epochs=10,validation_data=valset, validation_steps=1, validation_freq=1, callbacks=[tensorboard_callback])
     model.save_weights("model.h5")
     return model
 def test_model(model,testdata_path,num):
@@ -165,24 +165,24 @@ def test_model(model,testdata_path,num):
         if idx == num: break
 if __name__=="__main__":
     
-    traimg_path=r"/home/christina/Downloads/3. The cropped aerial image tiles and raster labels/3. The cropped image tiles and raster labels/train"
-    valimg_path=r"/home/christina/Downloads/3. The cropped aerial image tiles and raster labels/3. The cropped image tiles and raster labels/val"
-    testimg_path=r"/home/christina/Downloads/3. The cropped aerial image tiles and raster labels/3. The cropped image tiles and raster labels/test"
+    traimg_path=r"C:\Users\17733\Desktop\buildings\train"
+    valimg_path=r"C:\Users\17733\Desktop\buildings\train"
+    testimg_path=r"C:\Users\17733\Desktop\buildings\train"
     # set the pipeline to be executed and hyperparameters
-    MODEL = 'DVAE'
+    MODEL = 'DVAEr'
     LOSS_TYPE = 'FL' # can be one of BCE, BCEw, FL
 
     # picking a model according to the selection
     if MODEL == 'Unet':
-        model = Unet_2levels()
+        nets = Unet_2levels()
     elif MODEL == 'Dunet':
-        model = Dunet_2levels()
+        nets = Dunet_2levels()
     elif MODEL == 'DVAE':
         #ZDIM number of feature maps of the 3D encoding space, matters when using the DVAE refiner model
-        model = DVAE(zdim=100,batchsize =5)
+        nets = DVAE(zdim=100,batchsize =1)
     else:
-        model = DVAE_refiner(zdim=100,batchsize=5)
-    model = model(input_size = (512,512,3))
+        nets = DVAE_refiner(zdim=100,batchsize=1)
+    model = nets(input_size = (512,512,3))
     if not os.path.exists("./model.h5"):
         model=train_model(model,traimg_path,valimg_path)
     else:

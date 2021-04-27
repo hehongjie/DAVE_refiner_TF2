@@ -30,10 +30,9 @@ class Unet_2levels(object):
         super().__init__()
 
         self.relu = tf.keras.layers.ReLU()
-        self.sigmoid = tf.keras.layers.Activation('sigmoid')
 
         self.upsample = layers.UpSampling2D(size = (2,2), interpolation='bilinear')
-        self.maxpool = layers.MaxPool2D(pool_size=(2,2),stride=2,padding='same')
+        self.maxpool = layers.MaxPool2D(pool_size=(2,2),strides=2,padding='same')
 
         self.l11 = layers.Conv2D(64,(3,3),padding='same')
         self.l12 = layers.Conv2D(64,(3,3),padding='same')
@@ -50,12 +49,12 @@ class Unet_2levels(object):
         self.up1 = layers.Conv2DTranspose(128,(2,2),strides = (2,2),padding='same')
         self.up2 = layers.Conv2DTranspose(64,(2,2),strides = (2,2),padding='same')
 
-    def __call__(self, inputs = None, input_size = None,**kwargs):
+    def __call__(self, inputs = None, input_size = None,phase = 'training',**kwargs):
         assert inputs is not None or input_size is not None
         
         if inputs is None:
             assert isinstance(input_size, tuple)
-            inputs = layers.Input(shape = input_size)
+            inputs = layers.Input(shape = (input_size))
         x = inputs
         h11 = self.relu(self.l11(x))
         h12 = self.relu(self.l12(h11))
@@ -68,11 +67,14 @@ class Unet_2levels(object):
         h42 = self.relu(self.l42(h41))
         h51 = self.relu(self.l51(layers.concatenate([h12, self.up2(h42)],axis = -1)))
         h52 = self.relu(self.l52(h51))
-        output = self.sigmoid(self.l53(h52))
-        model = Model(x,output)
-        model.summary()
-        model.compile(optimizer = Adam(lr = 1e-3),loss='binary_crossentropy',metrics = ['accuracy',topo_metric])
-        return model
+        output = tf.keras.activations.sigmoid(self.l53(h52))
+        if phase == 'calling':
+            return output
+        else:
+            model = Model(x,output)
+            model.summary()
+            model.compile(optimizer = Adam(lr = 1e-3),loss='binary_crossentropy',metrics = ['accuracy',topo_metric])
+            return model
    
 def DUNET_loss(y_true,y_pred):
     bce1 = 0.5*tf.keras.losses.binary_crossentropy(y_true,y_pred[0])
@@ -85,31 +87,35 @@ class Dunet_2levels(object):
         self.segmentator = Unet_2levels()
         self.refiner = Unet_2levels()
 
-    def segment(self, x):
-        return self.segmentator(x)
+    def segment(self, x,phase):
+        return self.segmentator(x,input_size = None,phase=phase)
 
-    def refine(self, x):
-        return self.refiner(x)
+    def refine(self, x,phase):
+        return self.refiner(x,input_size = None,phase=phase)
 
-    def __call__(self, inputs = None, input_size = None,**kwargs):
+    def __call__(self, inputs = None, input_size = None,phase = 'training',**kwargs):
         assert inputs is not None or input_size is not None
         
         if inputs is None:
             assert isinstance(input_size, tuple)
-            inputs = layers.Input(shape = input_size)
+            inputs = layers.Input(shape = (input_size))
         x = inputs
-        seg = self.segment(x)
-        model = Model(x,[seg,self.refine(seg)])
-        model.summary()
-        model.compile(optimizer = Adam(lr = 1e-3),loss=DUNET_loss,metrics = ['accuracy',topo_metric])
-        return model
+        seg = self.segment(x,'calling')
+        ref = self.refine(seg,'calling')
+        if phase == 'calling':
+            return [seg,ref]
+        else:
+                
+            model = Model(x,[seg,ref])
+            model.summary()
+            model.compile(optimizer = Adam(lr = 1e-3),loss=DUNET_loss,metrics = ['accuracy',topo_metric])
+            return model
 
 class DVAE(object):
-    def __init__(self, zdim=100,batchsize = 5):
+    def __init__(self, zdim=100, batchsize = 5):
         super().__init__()
         
         self.relu = tf.keras.layers.ReLU()
-        self.sigmoid = tf.keras.layers.Activation('sigmoid')
 
         self.upsample = layers.UpSampling2D(size = (2,2), interpolation='bilinear')
         self.maxpool = layers.MaxPool2D(pool_size=(2,2),strides=2,padding='same')
@@ -135,35 +141,40 @@ class DVAE(object):
         return self.enc_l51(enc_h4), self.enc_l52(enc_h4)
         
     def sample(self, mu, logvar, phase):
-        if phase=='training':
-            std = tf.math.sqrt(tf.keras.activations.exponential(logvar))
-            eps = tf.random.normal([self.batchsize,std.shape[1],std.shape[2],std.shape[3]], 0, 1, tf.float32)
-            return eps * std + mu
-        else:
+        if phase=='testing':
             return mu
+        else:
+            std = tf.math.sqrt(tf.keras.activations.exponential(logvar))
+            eps = tf.random.normal([std.shape[1],std.shape[2],std.shape[3]], 0, 1, tf.float32)
+
+            return tf.expand_dims(eps,0) * std + mu
 
     def decode(self, z):
         dec_h1 = self.relu(self.dec_l1(z))
         dec_h2 = self.relu(self.dec_l2(dec_h1))
         dec_h3 = self.relu(self.dec_l3(dec_h2))
         dec_h4 = self.relu(self.dec_l4(dec_h3))
-        return self.sigmoid(self.dec_l5(dec_h4))
+        return tf.keras.activations.sigmoid(self.dec_l5(dec_h4))
 
-    def __call__(self, inputs = None, input_size = None, phase = 'training',**kwargs):
+    def __call__(self, inputs = None, input_size = None,phase = 'training',**kwargs):
         assert inputs is not None or input_size is not None
         
         if inputs is None:
             assert isinstance(input_size, tuple)
-            inputs = layers.Input(shape = input_size)
+            inputs = layers.Input(shape = (input_size))
         x = inputs
         mu, logvar = self.encode(x)
-        z = self.sample(mu, logvar, phase)
+        z = self.sample(mu, logvar, 'calling')
         ref = self.decode(z)
-        #mu, logvar, z, ref
-        model = Model(x,ref)
-        model.summary()
-        model.compile(optimizer = Adam(lr = 1e-3),loss='binary_crossentropy',metrics = ['accuracy',topo_metric])
-        return model
+        if phase == 'calling':
+            return ref
+        else:
+            
+            #mu, logvar, z, ref
+            model = Model(x,ref)
+            model.summary()
+            model.compile(optimizer = Adam(lr = 1e-3),loss='binary_crossentropy',metrics = ['accuracy',topo_metric])
+            return model
 
 def DVAEr_loss(y_true,y_pred):
     bce1 = 0.5*tf.keras.losses.binary_crossentropy(y_true,y_pred[0])
@@ -174,23 +185,23 @@ class DVAE_refiner(object):
         super().__init__()
 
         self.segmentator = Unet_2levels()
-        self.refiner = DVAE(zdim)
+        self.refiner = DVAE(zdim,batchsize)
         self.batchsize = batchsize 
-    def segment(self, x):
-        return self.segmentator(x)
+    def segment(self, x, phase):
+        return self.segmentator(x,input_size = None,phase=phase)
 
-    def refine(self, x, phase):
-        return self.refiner(x, phase)
+    def refine(self, x,phase):
+        return self.refiner(x,input_size = None,phase=phase)
 
-    def __call__(self, inputs = None, input_size = None, phase = 'training',**kwargs):
+    def __call__(self, inputs = None, input_size = None,phase = 'training',**kwargs):
         assert inputs is not None or input_size is not None
         
         if inputs is None:
             assert isinstance(input_size, tuple)
-            inputs = layers.Input(shape = input_size)
+            inputs = layers.Input(shape = (input_size))
         x = inputs
-        seg = self.segment(x)
-        mu, logvar, z, ref = self.refine(seg, phase)
+        seg = self.segment(x,'calling')
+        ref = self.refine(seg,'calling')
         #seg, mu, logvar, z, ref
         model = Model(x,[seg,ref])
         model.summary()
